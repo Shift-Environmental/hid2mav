@@ -15,11 +15,11 @@ A lightweight Linux-based system for turning HID joysticks into MAVLink MANUAL_C
 -  Python 3
 -  Linux (Debian-based recommended)
 -  Joystick or gamepad connected via `/dev/input/js*`
--  Telemetry radio connected via UART (`/dev/ttyS*`, `/dev/ttyAMA*`, etc.)
+-  IP-based MAVLink endpoint (e.g., `tcp:192.168.168.1:5760`)
 
-Install dependencies:
+## Installation
 
 ```bash
-sudo apt-get install python3 python3-venv python3-pip joystick
-pip install inputs pymavlink
+chmod +x hid2mav-install.sh
+./hid2mav-install.sh
 ```

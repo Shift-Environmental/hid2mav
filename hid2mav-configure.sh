@@ -2,46 +2,64 @@
 set -euo pipefail
 
 SERVICE_NAME="hid2mav.service"
-PY_SCRIPT_PATH=$(awk -F' ' '/ExecStart/ { print $2 }' /etc/systemd/system/$SERVICE_NAME)
-INSTALL_DIR=$(dirname "$PY_SCRIPT_PATH")
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+
+INSTALL_DIR="/opt/hid2mav"
 VENV_DIR="$INSTALL_DIR/venv"
-PY_SCRIPT_NAME=$(basename "$PY_SCRIPT_PATH")
+PY_SCRIPT_NAME="hid2mav-service.py"
 
-echo "[INFO] Configuring HID2MAV service..."
+GREEN="\033[1;32m"; RED="\033[1;31m"; YELLOW="\033[1;33m"; NC="\033[0m"
 
-# === Prompt serial ===
-echo "[INFO] Detecting serial devices..."
-SERIAL_DEVS=($(ls /dev/ttyS* /dev/ttyAMA* /dev/serial/by-id/* /dev/ttyUSB* 2>/dev/null || true))
-if [[ ${#SERIAL_DEVS[@]} -eq 0 ]]; then
-    read -rp "Enter serial device manually (e.g., /dev/ttyS0): " SERIAL_PATH
-else
-    i=1; for dev in "${SERIAL_DEVS[@]}"; do echo "  [$i] $dev"; ((i++)); done
-    read -rp "Select serial device: " SEL
-    SERIAL_PATH="${SERIAL_DEVS[$((SEL-1))]}"
+echo -e "${GREEN}[INFO] Reconfiguring HID2MAV systemd service...${NC}"
+
+# === MAVLink Endpoint ===
+read -rp "Enter MAVLink endpoint (e.g., tcp:192.168.168.1:5760): " SERIAL_PATH
+if [[ -z "$SERIAL_PATH" ]]; then
+  echo -e "${RED}[ERR] MAVLink endpoint required.${NC}"
+  exit 1
 fi
 
-# === Prompt HID ===
-echo "[INFO] Detecting HID devices..."
+# === Joystick Selection ===
 HID_DEVS=($(ls /dev/input/js* 2>/dev/null || true))
 if [[ ${#HID_DEVS[@]} -eq 0 ]]; then
-    read -rp "Enter HID device manually (e.g., /dev/input/js0): " HID_PATH
+  read -rp "Enter HID device manually (e.g., /dev/input/js0): " HID_PATH
 else
-    i=1; for dev in "${HID_DEVS[@]}"; do
-        NAME=$(cat /sys/class/input/"$(basename "$dev")"/device/name 2>/dev/null || echo "Unknown")
-        echo "  [$i] $dev — $NAME"
-        ((i++))
-    done
-    read -rp "Select HID device: " SEL
-    HID_PATH="${HID_DEVS[$((SEL-1))]}"
+  i=1; for dev in "${HID_DEVS[@]}"; do
+    NAME=$(cat /sys/class/input/"$(basename "$dev")"/device/name 2>/dev/null || echo "Unknown")
+    echo "  [$i] $dev — $NAME"
+    ((i++))
+  done
+  read -rp "Select HID device by number: " SEL
+  if ! [[ "$SEL" =~ ^[0-9]+$ ]] || (( SEL < 1 || SEL > ${#HID_DEVS[@]} )); then
+    echo -e "${RED}[ERR] Invalid selection.${NC}"
+    exit 1
+  fi
+  HID_PATH="${HID_DEVS[$((SEL-1))]}"
 fi
 
-# === Update systemd unit ===
-cat <<EOF | sudo tee /etc/systemd/system/$SERVICE_NAME > /dev/null
+# === Timing Values ===
+read -rp "Enter HEARTBEAT interval in ms (100–1000): " HB_MS
+if ! [[ "$HB_MS" =~ ^[0-9]+$ ]] || (( HB_MS < 100 || HB_MS > 1000 )); then
+  echo -e "${RED}[ERR] Invalid heartbeat interval.${NC}"
+  exit 1
+fi
+
+read -rp "Enter MANUAL_CONTROL interval in ms (100–1000): " MC_MS
+if ! [[ "$MC_MS" =~ ^[0-9]+$ ]] || (( MC_MS < 100 || MC_MS > 1000 )); then
+  echo -e "${RED}[ERR] Invalid manual control interval.${NC}"
+  exit 1
+fi
+
+# === Overwrite systemd service ===
+echo -e "${GREEN}[INFO] Updating $SERVICE_FILE...${NC}"
+cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
 [Unit]
 Description=HID to MAVLink bridge
 After=network.target
 
 [Service]
+Environment="HEARTBEAT_INTERVAL_MS=$HB_MS"
+Environment="MANUAL_CONTROL_INTERVAL_MS=$MC_MS"
 ExecStart=$VENV_DIR/bin/python $INSTALL_DIR/$PY_SCRIPT_NAME --serial $SERIAL_PATH --hid $HID_PATH
 WorkingDirectory=$INSTALL_DIR
 Restart=on-failure
@@ -52,7 +70,9 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+# === Reload and restart ===
 sudo systemctl daemon-reload
 sudo systemctl restart "$SERVICE_NAME"
 
-echo "[OK] HID2MAV service reconfigured and restarted."
+echo -e "${GREEN}[OK] HID2MAV service updated and restarted.${NC}"
+echo -e "${GREEN}[INFO] Heartbeat: ${HB_MS} ms | Manual Control: ${MC_MS} ms${NC}"
